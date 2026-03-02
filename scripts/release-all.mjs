@@ -21,19 +21,23 @@ function printUsage() {
 Usage:
   node scripts/release-all.mjs
   node scripts/release-all.mjs <channel>
+  node scripts/release-all.mjs --version <x.y.z>
   node scripts/release-all.mjs --channel <channel> [--with-shared]
+  node scripts/release-all.mjs --channel <channel> --version <x.y.z> [--with-shared]
 
 Channels:
   ${channelIds.join(", ")}
 
 Options:
   --with-shared    Also bump & publish @openclaw-china/shared
+  --version        Use a fixed version instead of auto patch bump
 `);
 }
 
 function parseArgs(args) {
   let channel = null;
   let withShared = false;
+  let version = null;
 
   for (let i = 0; i < args.length; i += 1) {
     const arg = args[i];
@@ -43,6 +47,15 @@ function parseArgs(args) {
     }
     if (arg === "--with-shared") {
       withShared = true;
+      continue;
+    }
+    if (arg === "--version" || arg === "-v") {
+      const next = args[i + 1];
+      if (!next) {
+        throw new Error("Missing version after --version");
+      }
+      version = next;
+      i += 1;
       continue;
     }
     if (arg === "--channel" || arg === "-c") {
@@ -65,6 +78,7 @@ function parseArgs(args) {
     mode: channel ? "channel" : "all",
     channel,
     withShared,
+    version,
   };
 }
 
@@ -143,6 +157,35 @@ function getNextVersion(pkgName, localVersion) {
   return bumpPatch(base);
 }
 
+function normalizeVersionInput(version) {
+  if (typeof version !== "string") {
+    throw new Error("Version must be a string");
+  }
+  return version.startsWith("v") ? version.slice(1) : version;
+}
+
+function ensureVersionGreaterThanPublished(pkgName, version) {
+  const latest = getLatestPublishedVersion(pkgName);
+  if (!latest) {
+    return;
+  }
+  const requestedParsed = parseVersion(version);
+  const latestParsed = parseVersion(latest);
+  if (compareVersions(requestedParsed, latestParsed) <= 0) {
+    throw new Error(
+      `Requested version ${version} for ${pkgName} must be greater than npm version ${latest}.`
+    );
+  }
+}
+
+function getReleaseVersion(pkgName, localVersion, fixedVersion) {
+  if (fixedVersion) {
+    ensureVersionGreaterThanPublished(pkgName, fixedVersion);
+    return fixedVersion;
+  }
+  return getNextVersion(pkgName, localVersion);
+}
+
 const sharedPkg = readJson(sharedPath);
 const dingtalkPkg = readJson(dingtalkPath);
 const feishuPkg = readJson(feishuPath);
@@ -161,6 +204,10 @@ const originalChannels = readJson(channelsPath);
 
 try {
   const options = parseArgs(process.argv.slice(2));
+  if (options.version) {
+    options.version = normalizeVersionInput(options.version);
+    parseVersion(options.version);
+  }
   if (options.channel === "feishu") {
     options.channel = "feishu-china";
   }
@@ -173,13 +220,25 @@ try {
   };
 
   if (options.mode === "all") {
-    const nextShared = getNextVersion(sharedPkg.name, sharedPkg.version);
-    const nextDingtalk = getNextVersion(dingtalkPkg.name, dingtalkPkg.version);
-    const nextFeishu = getNextVersion(feishuPkg.name, feishuPkg.version);
-    const nextWecom = getNextVersion(wecomPkg.name, wecomPkg.version);
-    const nextWecomApp = getNextVersion(wecomAppPkg.name, wecomAppPkg.version);
-    const nextQqbot = getNextVersion(qqbotPkg.name, qqbotPkg.version);
-    const nextChannels = getNextVersion(channelsPkg.name, channelsPkg.version);
+    const nextShared = getReleaseVersion(sharedPkg.name, sharedPkg.version, options.version);
+    const nextDingtalk = getReleaseVersion(
+      dingtalkPkg.name,
+      dingtalkPkg.version,
+      options.version
+    );
+    const nextFeishu = getReleaseVersion(feishuPkg.name, feishuPkg.version, options.version);
+    const nextWecom = getReleaseVersion(wecomPkg.name, wecomPkg.version, options.version);
+    const nextWecomApp = getReleaseVersion(
+      wecomAppPkg.name,
+      wecomAppPkg.version,
+      options.version
+    );
+    const nextQqbot = getReleaseVersion(qqbotPkg.name, qqbotPkg.version, options.version);
+    const nextChannels = getReleaseVersion(
+      channelsPkg.name,
+      channelsPkg.version,
+      options.version
+    );
 
     sharedPkg.version = nextShared;
     sharedPkg.private = false;
@@ -254,7 +313,7 @@ try {
 
     const latestShared = getLatestPublishedVersion(sharedPkg.name);
     const sharedVersionToUse = options.withShared
-      ? getNextVersion(sharedPkg.name, sharedPkg.version)
+      ? getReleaseVersion(sharedPkg.name, sharedPkg.version, options.version)
       : latestShared;
 
     if (!sharedVersionToUse) {
@@ -274,8 +333,12 @@ try {
       }
     }
 
-    const nextTarget = getNextVersion(targetPkg.name, targetPkg.version);
-    const nextChannels = getNextVersion(channelsPkg.name, channelsPkg.version);
+    const nextTarget = getReleaseVersion(targetPkg.name, targetPkg.version, options.version);
+    const nextChannels = getReleaseVersion(
+      channelsPkg.name,
+      channelsPkg.version,
+      options.version
+    );
 
     if (options.withShared) {
       sharedPkg.version = sharedVersionToUse;
