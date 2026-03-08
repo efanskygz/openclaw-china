@@ -183,6 +183,64 @@ describe("wecom ws reply context", () => {
     });
   });
 
+  it("prefers the newest callback context for target fallback instead of the most recently updated old stream", async () => {
+    const sent: Array<{ reqId: string; content?: string; finish?: boolean }> = [];
+
+    registerWecomWsMessageContext({
+      accountId: "acc-1",
+      reqId: "req-old",
+      to: "user:alice",
+      send: async (frame) => {
+        sent.push({
+          reqId: String(frame.headers?.req_id ?? ""),
+          content: (frame.body as { stream?: { content?: string; finish?: boolean } })?.stream?.content,
+          finish: (frame.body as { stream?: { content?: string; finish?: boolean } })?.stream?.finish,
+        });
+      },
+      streamId: "stream-old",
+    });
+
+    await appendWecomWsActiveStreamChunk({
+      accountId: "acc-1",
+      to: "user:alice",
+      chunk: "old reply",
+    });
+
+    registerWecomWsMessageContext({
+      accountId: "acc-1",
+      reqId: "req-new",
+      to: "user:alice",
+      send: async (frame) => {
+        sent.push({
+          reqId: String(frame.headers?.req_id ?? ""),
+          content: (frame.body as { stream?: { content?: string; finish?: boolean } })?.stream?.content,
+          finish: (frame.body as { stream?: { content?: string; finish?: boolean } })?.stream?.finish,
+        });
+      },
+      streamId: "stream-new",
+    });
+
+    await expect(
+      appendWecomWsActiveStreamChunk({
+        accountId: "acc-1",
+        to: "user:alice",
+        chunk: "new reply",
+      })
+    ).resolves.toBe(true);
+
+    expect(sent).toHaveLength(2);
+    expect(sent[0]).toMatchObject({
+      reqId: "req-old",
+      content: "old reply",
+      finish: false,
+    });
+    expect(sent[1]).toMatchObject({
+      reqId: "req-new",
+      content: "new reply",
+      finish: false,
+    });
+  });
+
   it("sends template card updates through the active event context", async () => {
     const sent: unknown[] = [];
     registerWecomWsEventContext({

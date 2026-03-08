@@ -9,6 +9,7 @@ type WsMessageContext = {
   reqId: string;
   to: string;
   streamId: string;
+  createdSeq: number;
   content: string;
   createdAt: number;
   updatedAt: number;
@@ -42,6 +43,7 @@ const messageByRunId = new Map<string, string>();
 const messageByTarget = new Map<string, Set<string>>();
 const eventByTarget = new Map<string, Set<string>>();
 const finishTimers = new Map<string, NodeJS.Timeout>();
+let nextMessageContextSeq = 0;
 
 function appendStreamSnapshotContent(current: string, chunk: string): string {
   if (!current.trim()) return chunk;
@@ -119,6 +121,26 @@ function pickNewestContext<T extends { updatedAt: number }>(ids: string[], looku
   return newest;
 }
 
+function pickPreferredMessageContext(ids: string[], lookup: Map<string, WsMessageContext>): WsMessageContext | null {
+  let preferred: WsMessageContext | null = null;
+  for (const id of ids) {
+    const current = lookup.get(id);
+    if (!current || current.finished) continue;
+    if (!preferred) {
+      preferred = current;
+      continue;
+    }
+    if (preferred.started && !current.started) {
+      preferred = current;
+      continue;
+    }
+    if (preferred.started === current.started && current.createdSeq > preferred.createdSeq) {
+      preferred = current;
+    }
+  }
+  return preferred;
+}
+
 function enqueue<T extends { queue: Promise<void> }>(context: T, task: () => Promise<void>): Promise<void> {
   context.queue = context.queue.then(task, task);
   return context.queue;
@@ -191,9 +213,7 @@ function findMessageContext(params: {
   }
 
   const ids = trimActiveIds(messageByTarget.get(targetKey(accountId, to)) ?? [], messageContexts, MESSAGE_CONTEXT_TTL_MS);
-  const newest = pickNewestContext(ids, messageContexts);
-  if (newest && !newest.finished) return newest;
-  return null;
+  return pickPreferredMessageContext(ids, messageContexts);
 }
 
 function findEventContext(params: {
@@ -225,6 +245,7 @@ export function registerWecomWsMessageContext(params: {
     reqId: params.reqId.trim(),
     to: params.to.trim(),
     streamId: params.streamId?.trim() || createWecomWsStreamId(),
+    createdSeq: ++nextMessageContextSeq,
     content: "",
     createdAt: now(),
     updatedAt: now(),
