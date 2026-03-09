@@ -8,7 +8,7 @@ import {
   type QQBotConfig,
 } from "./config.js";
 
-interface WizardPrompter {
+export interface WizardPrompter {
   note: (message: string, title?: string) => Promise<void>;
   text: (opts: {
     message: string;
