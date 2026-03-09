@@ -1,6 +1,6 @@
 {
   "name": "@openclaw-china/wecom-app",
-  "version": "0.1.0",
+  "version": "2026.3.9-1",
   "type": "module",
   "description": "Openclaw WeCom Self-built Application (企业微信自建应用) channel plugin",
   "license": "MIT",
@@ -93,7 +93,7 @@
     "release:major": "npm run build && npm version major && npm publish"
   },
   "dependencies": {
-    "@openclaw-china/shared": "0.1.13"
+    "@openclaw-china/shared": "2026.3.9-1"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

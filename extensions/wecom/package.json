@@ -1,6 +1,6 @@
 {
   "name": "@openclaw-china/wecom",
-  "version": "0.1.3",
+  "version": "2026.3.9-1",
   "type": "module",
   "description": "Moltbot WeCom smart bot channel plugin",
   "license": "MIT",
@@ -99,7 +99,7 @@
   },
   "dependencies": {
     "@wecom/aibot-node-sdk": "^1.0.1",
-    "@openclaw-china/shared": "0.1.13",
+    "@openclaw-china/shared": "2026.3.9-1",
     "ws": "^8.18.0"
   },
   "devDependencies": {
