@@ -29,9 +29,9 @@
 ![创建机器人-1](../../images/wecom_create_bot_step1.png)
 ![创建机器人-2](../../images/wecom_create_bot_step2.png)
 
-![创建机器人-3](D:\work\code\moltbot-china\doc\images\image-20260308222851633.png)
+![创建机器人-3](../../images/image-20260308222851633.png)
 
-![image-20260308223411308](D:\work\code\moltbot-china\doc\images\image-20260308223411308.png)
+![image-20260308223411308](../../images/image-20260308223411308.png)
 
 企业微信智能机器人现在有两种接入方式：
 
@@ -55,7 +55,7 @@
 
 **推荐，**企业微信于**3月8日**发布此方式，本插件于**当天**率先支持
 
-![image-20260308222753962](D:\work\code\moltbot-china\doc\images\image-20260308222753962.png)
+![image-20260308222753962](../../images/image-20260308222753962.png)
 
 
 
@@ -67,7 +67,7 @@
 
 ### 3. 机器人二维码
 
-![image-20260308223801195](D:\work\code\moltbot-china\doc\images\image-20260308223801195.png)
+![image-20260308223801195](../../images/image-20260308223801195.png)
 
 
 
