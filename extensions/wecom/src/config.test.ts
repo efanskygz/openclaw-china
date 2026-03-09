@@ -9,11 +9,30 @@ import {
 } from "./config.js";
 
 describe("resolveWecomAccount", () => {
-  it("defaults to webhook mode for legacy configs", () => {
+  it("defaults to ws mode when mode is omitted", () => {
     const account = resolveWecomAccount({
       cfg: {
         channels: {
           wecom: {
+            botId: "bot-1",
+            secret: "secret-1",
+          },
+        },
+      },
+    });
+
+    expect(account.mode).toBe("ws");
+    expect(account.configured).toBe(true);
+    expect(account.botId).toBe("bot-1");
+    expect(account.secret).toBe("secret-1");
+  });
+
+  it("keeps webhook mode only when explicitly configured", () => {
+    const account = resolveWecomAccount({
+      cfg: {
+        channels: {
+          wecom: {
+            mode: "webhook",
             token: "token-1",
             encodingAESKey: "abcdefghijklmnopqrstuvwxyz0123456789ABCDE",
           },

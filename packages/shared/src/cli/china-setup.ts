@@ -294,16 +294,24 @@ function getPreferredAccountConfig(channelCfg: ConfigRecord): ConfigRecord | und
   return undefined;
 }
 
-function hasTokenPair(channelCfg: ConfigRecord): boolean {
-  if (hasNonEmptyString(channelCfg.token) && hasNonEmptyString(channelCfg.encodingAESKey)) {
+function hasCredentialPair(channelCfg: ConfigRecord, firstKey: string, secondKey: string): boolean {
+  if (hasNonEmptyString(channelCfg[firstKey]) && hasNonEmptyString(channelCfg[secondKey])) {
     return true;
   }
   const accountCfg = getPreferredAccountConfig(channelCfg);
   return Boolean(
     accountCfg &&
-      hasNonEmptyString(accountCfg.token) &&
-      hasNonEmptyString(accountCfg.encodingAESKey)
+      hasNonEmptyString(accountCfg[firstKey]) &&
+      hasNonEmptyString(accountCfg[secondKey])
   );
+}
+
+function hasTokenPair(channelCfg: ConfigRecord): boolean {
+  return hasCredentialPair(channelCfg, "token", "encodingAESKey");
+}
+
+function hasWecomWsCredentialPair(channelCfg: ConfigRecord): boolean {
+  return hasCredentialPair(channelCfg, "botId", "secret");
 }
 
 function isChannelConfigured(cfg: ConfigRoot, channelId: ChannelId): boolean {
@@ -316,6 +324,7 @@ function isChannelConfigured(cfg: ConfigRoot, channelId: ChannelId): boolean {
     case "qqbot":
       return hasNonEmptyString(channelCfg.appId) && hasNonEmptyString(channelCfg.clientSecret);
     case "wecom":
+      return hasWecomWsCredentialPair(channelCfg);
     case "wecom-app":
       return hasTokenPair(channelCfg);
     default:
@@ -504,26 +513,25 @@ async function configureWecom(prompter: SetupPrompter, cfg: ConfigRoot): Promise
   section("配置 WeCom（企业微信-智能机器人）");
   showGuideLink("wecom");
   const existing = getChannelConfig(cfg, "wecom");
+  clackNote("当前向导仅提供 WeCom ws 长连接配置。", "提示");
 
-  const webhookPath = await prompter.askText({
-    label: "Webhook 路径（需与企业微信后台配置一致，默认 /wecom）",
-    defaultValue: toTrimmedString(existing.webhookPath) ?? "/wecom",
+  const botId = await prompter.askText({
+    label: "WeCom botId（ws 长连接）",
+    defaultValue: toTrimmedString(existing.botId),
     required: true,
   });
-  const token = await prompter.askSecret({
-    label: "WeCom token",
-    existingValue: toTrimmedString(existing.token),
-    required: true,
-  });
-  const encodingAESKey = await prompter.askSecret({
-    label: "WeCom encodingAESKey",
-    existingValue: toTrimmedString(existing.encodingAESKey),
+  const secret = await prompter.askSecret({
+    label: "WeCom secret（ws 长连接）",
+    existingValue: toTrimmedString(existing.secret),
     required: true,
   });
   return mergeChannelConfig(cfg, "wecom", {
-    webhookPath,
-    token,
-    encodingAESKey,
+    mode: "ws",
+    botId,
+    secret,
+    webhookPath: undefined,
+    token: undefined,
+    encodingAESKey: undefined,
   });
 }
 

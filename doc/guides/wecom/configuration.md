@@ -117,7 +117,7 @@ openclaw china setup
 
 ## 三、配置
 
-插件支持 `webhook` 和 `ws` 两种模式。未填写 `mode` 时，默认仍按 `webhook` 处理。
+插件支持 `webhook` 和 `ws` 两种模式。未填写 `mode` 时，默认按 `ws` 处理；如果仍要使用旧的公网回调方式，必须显式设置 `mode=webhook`。
 
 最小可用配置如下。
 

@@ -61,11 +61,11 @@ function normalizeRoutePath(path: string | undefined, fallback: string): string 
 
 function collectWecomRoutePaths(config: WecomRouteConfig | undefined): string[] {
   const routes = new Set<string>(["/wecom-media"]);
-  if ((config?.mode ?? "webhook") !== "ws") {
+  if ((config?.mode ?? "ws") !== "ws") {
     routes.add(normalizeRoutePath(config?.webhookPath, "/wecom"));
   }
   for (const accountConfig of Object.values(config?.accounts ?? {})) {
-    if ((accountConfig?.mode ?? config?.mode ?? "webhook") === "ws") continue;
+    if ((accountConfig?.mode ?? config?.mode ?? "ws") === "ws") continue;
     const customPath = accountConfig?.webhookPath?.trim();
     routes.add(normalizeRoutePath(customPath, "/wecom"));
   }

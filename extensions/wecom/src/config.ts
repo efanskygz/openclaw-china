@@ -56,7 +56,7 @@ export const WecomConfigJsonSchema = {
     properties: {
       name: { type: "string" },
       enabled: { type: "boolean" },
-      mode: { type: "string", enum: ["webhook", "ws"] },
+      mode: { type: "string", enum: ["webhook", "ws"], default: "ws" },
       webhookPath: { type: "string" },
       token: { type: "string" },
       encodingAESKey: { type: "string" },
@@ -84,7 +84,7 @@ export const WecomConfigJsonSchema = {
           properties: {
             name: { type: "string" },
             enabled: { type: "boolean" },
-            mode: { type: "string", enum: ["webhook", "ws"] },
+            mode: { type: "string", enum: ["webhook", "ws"], default: "ws" },
             webhookPath: { type: "string" },
             token: { type: "string" },
             encodingAESKey: { type: "string" },
@@ -131,7 +131,7 @@ export function normalizeAccountId(raw?: string | null): string {
 }
 
 function normalizeMode(raw?: string | null): WecomTransportMode {
-  return raw === "ws" ? "ws" : "webhook";
+  return raw === "webhook" ? "webhook" : "ws";
 }
 
 function normalizeWsImageReplyMode(raw?: string | null): WecomWsImageReplyMode {

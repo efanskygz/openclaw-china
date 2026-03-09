@@ -73,20 +73,20 @@
 - **【全网首发】钉钉、QQ、企微支持文件接受和发送**
 - **【全网首发】钉钉、QQ、飞书支持定时任务；企微智能机器人长连接支持受限主动发送**
 
-| 功能 | 钉钉 | 飞书 | QQ | 企业微信<br />智能机器人<br />Webhook | 企业微信<br />智能机器人<br />长连接（无需公网IP） | 企业微信自建应用<br />（可接入普通微信） |
-|------|:----:|:----:|:--:|:------------------:|:------------------:|:----------------:|
-| 文本消息 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Markdown | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| 流式响应 | ✅ | - | ❌ | ✅ | ✅ | ❌ |
-| 图片/文件 | ✅  | ✅<br />（仅发送） | ✅<br />（出站：私聊任意类型， 群聊仅图片） | ✅ | ✅ | ✅<br />（出站任意类型；入站允许图片、音视频、定位、语音） |
-| 语音消息 | ✅ | - | ✅ | ✅ | ✅ | ✅ |
-| 私聊 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| 群聊 | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ |
-| @机器人检测 | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ |
-| 多账户 | ✅ | -  | ✅ | ✅ | ✅ | ✅ |
-| 主动发送消息<br />（定时任务） | ✅ | ✅ | ✅ | ❌ | ✅ | ✅（文本、图片、Markdown） |
-| 连接方式 | Stream | WebSocket | - | HTTPS 回调 | WebSocket 长连接 | HTTPS 回调 |
-| Access Token 缓存 | - | - | - | - | - | ✅（2 小时有效期） |
+| 功能 | 钉钉 | 飞书 | QQ | 企业微信<br />智能机器人<br />长连接（无需公网IP） | 企业微信自建应用<br />（可接入普通微信） |
+|------|:----:|:----:|:--:|:------------------:|:----------------:|
+| 文本消息 | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Markdown | ✅ | ✅ | ✅ | ✅ | ✅ |
+| 流式响应 | ✅ | - | ❌ | ✅ | ❌ |
+| 图片/文件 | ✅  | ✅<br />（仅发送） | ✅<br />（出站：私聊任意类型， 群聊仅图片） | ✅ | ✅<br />（出站任意类型；入站允许图片、音视频、定位、语音） |
+| 语音消息 | ✅ | - | ✅ | ✅ | ✅ |
+| 私聊 | ✅ | ✅ | ✅ | ✅ | ✅ |
+| 群聊 | ✅ | ✅ | ✅ | ✅ | ❌ |
+| @机器人检测 | ✅ | ✅ | ✅ | ❌ | ❌ |
+| 多账户 | ✅ | -  | ✅ | ✅ | ✅ |
+| 主动发送消息<br />（定时任务） | ✅ | ✅ | ✅ | ✅ | ✅（文本、图片、Markdown） |
+| 连接方式 | Stream | WebSocket | - | WebSocket 长连接 | HTTPS 回调 |
+| Access Token 缓存 | - | - | - | - | ✅（2 小时有效期） |
 
 ## 更新日志
 
@@ -372,20 +372,20 @@ openclaw config set channels.qqbot.asr.secretKey your-tencent-secret-key
 
 > 📖 **[企业微信智能机器人配置指南](doc/guides/wecom/configuration.md)**
 
-> 企业微信智能机器人（API 模式）通过公网 HTTPS 回调接收消息，仅支持被动回复
+> 企业微信智能机器人推荐使用长连接 `ws` 模式，无需公网 IP
 
 ```bash
 openclaw config set channels.wecom.enabled true
-openclaw config set channels.wecom.webhookPath /wecom
-openclaw config set channels.wecom.token your-token
-openclaw config set channels.wecom.encodingAESKey your-43-char-encoding-aes-key
+openclaw config set channels.wecom.mode ws
+openclaw config set channels.wecom.botId your-bot-id
+openclaw config set channels.wecom.secret your-bot-secret
 ```
 
 **注意事项**
 
-- `webhookPath` 必须为公网 HTTPS 可访问路径（如 `https://your.domain/wecom`）
-- `encodingAESKey` 必须为 43 位字符
-- 如遇回调校验失败，先确认 Token/EncodingAESKey 与后台一致
+- 未填写 `mode` 时，默认也是 `ws`
+- `botId` 和 `secret` 需要从企业微信智能机器人后台获取
+- 如需旧版公网回调方式，请改用完整配置指南中的 `webhook` 模式说明
 
 </details>
 
@@ -501,9 +501,8 @@ openclaw china setup
     },
     "wecom": {
       "enabled": true,
-      "webhookPath": "/wecom",
-      "token": "your-token",
-      "encodingAESKey": "your-43-char-encoding-aes-key"
+      "botId": "your-bot-id",
+      "secret": "your-bot-secret"
     },
     "wecom-app": {
       "enabled": true,
@@ -604,6 +603,27 @@ flowchart TD
 
 
 如果二维码过期，可以加下我微信备注说明来意：a28417416
+
+## Star 趋势
+
+<p align="center">
+  <a href="https://www.star-history.com/#BytePioneer-AI/openclaw-china&Date">
+    <picture>
+      <source
+        media="(prefers-color-scheme: dark)"
+        srcset="https://api.star-history.com/svg?repos=BytePioneer-AI/openclaw-china&type=Date&theme=dark"
+      />
+      <source
+        media="(prefers-color-scheme: light)"
+        srcset="https://api.star-history.com/svg?repos=BytePioneer-AI/openclaw-china&type=Date"
+      />
+      <img
+        alt="Star History Chart"
+        src="https://api.star-history.com/svg?repos=BytePioneer-AI/openclaw-china&type=Date"
+      />
+    </picture>
+  </a>
+</p>
 
 ## License
 

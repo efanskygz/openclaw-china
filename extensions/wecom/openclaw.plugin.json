@@ -10,7 +10,7 @@
     "properties": {
       "enabled": { "type": "boolean" },
       "name": { "type": "string" },
-      "mode": { "type": "string", "enum": ["webhook", "ws"] },
+      "mode": { "type": "string", "enum": ["webhook", "ws"], "default": "ws" },
       "webhookPath": { "type": "string" },
       "token": { "type": "string" },
       "encodingAESKey": { "type": "string" },
@@ -38,7 +38,7 @@
           "properties": {
             "name": { "type": "string" },
             "enabled": { "type": "boolean" },
-            "mode": { "type": "string", "enum": ["webhook", "ws"] },
+            "mode": { "type": "string", "enum": ["webhook", "ws"], "default": "ws" },
             "webhookPath": { "type": "string" },
             "token": { "type": "string" },
             "encodingAESKey": { "type": "string" },
