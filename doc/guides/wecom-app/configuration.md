@@ -64,14 +64,9 @@
 
 访问 <https://work.weixin.qq.com/>，按页面提示注册并进入管理后台。
 
-<img src="../../images/wecom_register_company_step1.png" alt="企业注册-1" style="zoom:50%;" />
-<img src="../../images/wecom_register_company_step2.png" alt="企业注册-2" style="zoom:50%;" />
-<img src="../../images/wecom_register_company_step3.png" alt="企业注册-3" style="zoom:50%;" />
-<img src="../../images/wecom_register_company_step4.png" alt="企业注册-4" style="zoom:50%;" />
+教程可参考此文档的【注册并登录企业微信】：https://github.com/BytePioneer-AI/openclaw-china/blob/main/doc/guides/wecom/configuration.md
 
-
-
-## 步骤一：安装 OpenClaw-China 的 wecom-app 插件
+### 步骤零：安装 wecom-app 插件
 
 支持两种安装方式，按需选择：
 
@@ -126,7 +121,7 @@ pnpm build
 
 ---
 
-## 步骤二：创建自建应用
+## 步骤一：创建自建应用
 
 请注意，我们一共需要下面这些数据：
 
