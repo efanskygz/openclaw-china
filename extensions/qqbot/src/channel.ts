@@ -61,7 +61,7 @@ export const qqbotPlugin = {
   },
 
   capabilities: {
-    chatTypes: ["direct", "channel"] as const,
+    chatTypes: ["direct", "group", "channel"] as const,
     media: true,
     reactions: false,
     threads: false,
