@@ -1,8 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Logger } from "@openclaw-china/shared";
 import {
+  appendQQBotBufferedText,
   evaluateReplyFinalOnlyDelivery,
+  hasQQBotMarkdownTable,
   isQQBotGroupMessageInterfaceBlocked,
+  normalizeQQBotRenderedMarkdown,
+  resolveQQBotTextReplyRefs,
   resolveQQBotNoReplyFallback,
   sanitizeQQBotOutboundText,
   sendQQBotMediaWithFallback,
@@ -106,6 +110,167 @@ describe("sendQQBotMediaWithFallback", () => {
 
     expect(sendText).not.toHaveBeenCalled();
     expect(onDelivered).not.toHaveBeenCalled();
+  });
+});
+
+describe("resolveQQBotTextReplyRefs", () => {
+  it("drops passive reply refs for c2c markdown tables", () => {
+    const refs = resolveQQBotTextReplyRefs({
+      to: "user:u-1",
+      text: "| col1 | col2 |\n| --- | --- |\n| a | b |",
+      markdownSupport: true,
+      c2cMarkdownDeliveryMode: "proactive-table-only",
+      replyToId: "reply-1",
+      replyEventId: "event-1",
+    });
+
+    expect(refs).toEqual({
+      forceProactive: true,
+      replyToId: undefined,
+      replyEventId: undefined,
+    });
+  });
+
+  it("drops passive reply refs for plain c2c text when markdown is enabled", () => {
+    const refs = resolveQQBotTextReplyRefs({
+      to: "user:u-1",
+      text: "普通文本回复",
+      markdownSupport: true,
+      c2cMarkdownDeliveryMode: "proactive-all",
+      replyToId: "reply-2",
+      replyEventId: "event-2",
+    });
+
+    expect(refs).toEqual({
+      forceProactive: true,
+      replyToId: undefined,
+      replyEventId: undefined,
+    });
+  });
+
+  it("keeps passive reply refs for group markdown tables", () => {
+    const refs = resolveQQBotTextReplyRefs({
+      to: "group:g-1",
+      text: "| col1 | col2 |\n| --- | --- |\n| a | b |",
+      markdownSupport: true,
+      c2cMarkdownDeliveryMode: "proactive-all",
+      replyToId: "reply-3",
+      replyEventId: "event-3",
+    });
+
+    expect(refs).toEqual({
+      forceProactive: false,
+      replyToId: "reply-3",
+      replyEventId: "event-3",
+    });
+  });
+
+  it("keeps passive reply refs when markdown support is disabled", () => {
+    const refs = resolveQQBotTextReplyRefs({
+      to: "user:u-1",
+      text: "# 普通文本回复",
+      markdownSupport: false,
+      c2cMarkdownDeliveryMode: "proactive-all",
+      replyToId: "reply-4",
+      replyEventId: "event-4",
+    });
+
+    expect(refs).toEqual({
+      forceProactive: false,
+      replyToId: "reply-4",
+      replyEventId: "event-4",
+    });
+  });
+
+  it("keeps passive reply refs for c2c text when mode is passive", () => {
+    const refs = resolveQQBotTextReplyRefs({
+      to: "user:u-1",
+      text: "# 标题\n\n普通文本回复",
+      markdownSupport: true,
+      c2cMarkdownDeliveryMode: "passive",
+      replyToId: "reply-5",
+      replyEventId: "event-5",
+    });
+
+    expect(refs).toEqual({
+      forceProactive: false,
+      replyToId: "reply-5",
+      replyEventId: "event-5",
+    });
+  });
+
+  it("keeps passive reply refs for non-table c2c text when mode is proactive-table-only", () => {
+    const refs = resolveQQBotTextReplyRefs({
+      to: "user:u-1",
+      text: "# 标题\n\n普通文本回复",
+      markdownSupport: true,
+      c2cMarkdownDeliveryMode: "proactive-table-only",
+      replyToId: "reply-6",
+      replyEventId: "event-6",
+    });
+
+    expect(refs).toEqual({
+      forceProactive: false,
+      replyToId: "reply-6",
+      replyEventId: "event-6",
+    });
+  });
+});
+
+describe("hasQQBotMarkdownTable", () => {
+  it("detects standard markdown tables", () => {
+    expect(hasQQBotMarkdownTable("| col1 | col2 |\n| --- | --- |\n| a | b |")).toBe(true);
+  });
+
+  it("ignores bullet lists and plain text", () => {
+    expect(hasQQBotMarkdownTable("- item 1\n- item 2")).toBe(false);
+    expect(hasQQBotMarkdownTable("普通文本")).toBe(false);
+  });
+});
+
+describe("appendQQBotBufferedText", () => {
+  it("appends distinct buffered segments", () => {
+    const buffered = appendQQBotBufferedText(["第一段"], "第二段");
+    expect(buffered).toEqual(["第一段", "第二段"]);
+  });
+
+  it("collapses cumulative updates into the latest payload", () => {
+    const buffered = appendQQBotBufferedText(["第一段"], "第一段\n\n第二段");
+    expect(buffered).toEqual(["第一段\n\n第二段"]);
+  });
+
+  it("ignores repeated excerpts already covered by buffered text", () => {
+    const buffered = appendQQBotBufferedText(["第一段\n\n第二段"], "第二段");
+    expect(buffered).toEqual(["第一段\n\n第二段"]);
+  });
+});
+
+describe("normalizeQQBotRenderedMarkdown", () => {
+  it("unwraps explicit markdown fences so non-table markdown can render", () => {
+    const text = "```markdown\n# 标题\n\n这是 `行内代码`\n\n> 引用\n\n---\n```";
+    expect(normalizeQQBotRenderedMarkdown(text)).toBe(
+      "# 标题\n\n这是 `行内代码`\n\n> 引用\n\n---"
+    );
+  });
+
+  it("unwraps explicit markdown fences with nested code blocks when outer fence is longer", () => {
+    const text =
+      "````markdown\n# 标题\n\n```ts\nconst answer = 42;\n```\n\n| col1 | col2 |\n| --- | --- |\n| a | b |\n````";
+    expect(normalizeQQBotRenderedMarkdown(text)).toBe(
+      "# 标题\n\n```ts\nconst answer = 42;\n```\n\n| col1 | col2 |\n| --- | --- |\n| a | b |"
+    );
+  });
+
+  it("unwraps markdown fences around tables", () => {
+    const text = "下面是表格：\n\n```markdown\n| col1 | col2 |\n| --- | --- |\n| a | b |\n```";
+    expect(normalizeQQBotRenderedMarkdown(text)).toBe(
+      "下面是表格：\n\n| col1 | col2 |\n| --- | --- |\n| a | b |"
+    );
+  });
+
+  it("keeps non-table fenced code blocks unchanged", () => {
+    const text = "```ts\nconsole.log('hello');\n```";
+    expect(normalizeQQBotRenderedMarkdown(text)).toBe(text);
   });
 });
 

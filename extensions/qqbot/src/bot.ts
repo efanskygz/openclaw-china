@@ -14,9 +14,12 @@ import {
   type Logger,
   appendCronHiddenPrompt,
   ASRError,
+  detectMediaType,
   extractMediaFromText,
   isImagePath,
+  isLocalReference,
   pruneInboundMediaDir,
+  stripTitleFromUrl,
   transcribeTencentFlash,
 } from "@openclaw-china/shared";
 import {
@@ -27,9 +30,14 @@ import {
   resolveQQBotAutoSendLocalPathMedia,
   mergeQQBotAccountConfig,
   DEFAULT_ACCOUNT_ID,
+  type QQBotC2CMarkdownDeliveryMode,
   type QQBotAccountConfig,
   type PluginConfig,
 } from "./config.js";
+import {
+  isQQBotHttpImageUrl,
+  normalizeQQBotMarkdownImages,
+} from "./markdown-images.js";
 import { qqbotOutbound } from "./outbound.js";
 import { upsertKnownQQBotTarget, type KnownQQBotTarget } from "./proactive.js";
 import { getQQBotRuntime } from "./runtime.js";
@@ -48,6 +56,38 @@ type DispatchParams = {
   accountId: string;
   logger?: Logger;
 };
+
+type QQBotAgentRoute = {
+  sessionKey: string;
+  accountId: string;
+  agentId?: string;
+  mainSessionKey?: string;
+};
+
+const sessionDispatchQueue = new Map<string, Promise<void>>();
+
+function buildSessionDispatchQueueKey(route: QQBotAgentRoute): string {
+  const accountId = route.accountId?.trim() || DEFAULT_ACCOUNT_ID;
+  return `${accountId}:${route.sessionKey}`;
+}
+
+async function runSerializedSessionDispatch<T>(
+  queueKey: string,
+  task: () => Promise<T>
+): Promise<T> {
+  const previous = sessionDispatchQueue.get(queueKey) ?? Promise.resolve();
+  const run = previous.catch(() => undefined).then(task);
+  const cleanup = run.then(() => undefined, () => undefined);
+  sessionDispatchQueue.set(queueKey, cleanup);
+
+  try {
+    return await run;
+  } finally {
+    if (sessionDispatchQueue.get(queueKey) === cleanup) {
+      sessionDispatchQueue.delete(queueKey);
+    }
+  }
+}
 
 function toString(value: unknown): string | undefined {
   if (typeof value === "string" && value.trim()) return value;
@@ -614,29 +654,69 @@ function extractLocalMediaFromText(params: {
   logger?: Logger;
 }): { text: string; mediaUrls: string[] } {
   const { text, logger } = params;
-  const result = extractMediaFromText(text, {
-    removeFromText: true,
-    checkExists: true,
-    existsSync: (p: string) => {
-      const exists = fs.existsSync(p);
-      if (!exists) {
-        logger?.warn?.(`[media] local file not found: ${p}`);
-      }
-      return exists;
-    },
-    parseMediaLines: false,
-    parseMarkdownImages: true,
-    parseHtmlImages: false,
-    parseBarePaths: true,
-    parseMarkdownLinks: true,
+  const mediaUrls: string[] = [];
+  const seenMedia = new Set<string>();
+  let nextText = text;
+  const MARKDOWN_LINKED_IMAGE_RE = /\[!\[([^\]]*)\]\(([^)]+)\)\]\(([^)]+)\)/g;
+  const MARKDOWN_IMAGE_RE = /!\[([^\]]*)\]\(([^)]+)\)/g;
+  const MARKDOWN_LINK_RE = /\[([^\]]*)\]\(([^)]+)\)/g;
+  const BARE_LOCAL_MEDIA_PATH_RE =
+    /`?((?:\/(?:tmp|var|private|Users|home|root)\/[^\s`'",)]+|[A-Za-z]:[\\/][^\s`'",)]+)\.(?:png|jpg|jpeg|gif|bmp|webp|svg|ico|mp3|wav|ogg|m4a|amr|flac|aac|wma|mp4|mov|avi|mkv|webm|flv|wmv|m4v))`?/gi;
+
+  const collectLocalRichMedia = (
+    rawValue: string,
+    allowedTypes?: ReadonlySet<"image" | "audio" | "video">
+  ): string | undefined => {
+    const candidate = stripTitleFromUrl(rawValue.trim());
+    if (!candidate || !isLocalReference(candidate)) {
+      return undefined;
+    }
+    if (!fs.existsSync(candidate)) {
+      logger?.warn?.(`[media] local file not found: ${candidate}`);
+      return undefined;
+    }
+    const mediaType = detectMediaType(candidate);
+    if (mediaType === "file") {
+      return undefined;
+    }
+    if (allowedTypes && !allowedTypes.has(mediaType)) {
+      return undefined;
+    }
+    if (seenMedia.has(candidate)) {
+      return candidate;
+    }
+    seenMedia.add(candidate);
+    mediaUrls.push(candidate);
+    return candidate;
+  };
+
+  nextText = nextText.replace(MARKDOWN_LINKED_IMAGE_RE, (fullMatch, _alt, rawPath) => {
+    return collectLocalRichMedia(rawPath) ? "" : fullMatch;
   });
 
-  const mediaUrls = result.all
-    .filter((m): m is ExtractedMedia & { localPath: string } => m.isLocal && typeof m.localPath === "string")
-    .filter((m) => m.type !== "file")
-    .map((m) => m.localPath);
+  nextText = nextText.replace(MARKDOWN_IMAGE_RE, (fullMatch, _alt, rawPath) => {
+    return collectLocalRichMedia(rawPath) ? "" : fullMatch;
+  });
 
-  return { text: result.text, mediaUrls };
+  nextText = nextText.replace(MARKDOWN_LINK_RE, (fullMatch, _label, rawPath) => {
+    const mediaPath = collectLocalRichMedia(rawPath, new Set(["audio", "video"]));
+    if (!mediaPath) {
+      return fullMatch;
+    }
+    return "";
+  });
+
+  nextText = nextText.replace(BARE_LOCAL_MEDIA_PATH_RE, (fullMatch, rawPath) => {
+    return collectLocalRichMedia(rawPath) ? "" : fullMatch;
+  });
+
+  nextText = nextText.replace(/[ \t]+\n/g, "\n");
+  nextText = nextText.replace(/\n{3,}/g, "\n\n");
+
+  return {
+    text: nextText.trim(),
+    mediaUrls,
+  };
 }
 
 function extractMediaLinesFromText(params: {
@@ -709,6 +789,9 @@ const VOICE_EMOTION_TAG_RE =
   /\[(?:happy|excited|calm|sad|angry|frustrated|softly|whispers|loudly|cheerfully|deadpan|sarcastically|laughs|sighs|chuckles|gasps|pause|slowly|rushed|hesitates|playfully|warmly|gently)\]/gi;
 const TTS_LIKE_RAW_TEXT_RE =
   /\[\[\s*(?:tts(?::text)?|\/tts(?::text)?|audio_as_voice|reply_to_current|reply_to\s*:)/i;
+const MARKDOWN_TABLE_SEPARATOR_RE = /^\|?(?:\s*:?-{3,}:?\s*\|)+(?:\s*:?-{3,}:?)?\|?$/;
+const EXPLICIT_MARKDOWN_FENCE_RE = /(^|\n)(`{3,}|~{3,})\s*(?:markdown|md)\s*\n([\s\S]*?)\n\2(?=\n|$)/gi;
+const GENERIC_MARKDOWN_FENCE_RE = /(^|\n)(`{3,}|~{3,})\s*\n([\s\S]*?)\n\2(?=\n|$)/g;
 
 function extractFinalBlocks(text: string): string | undefined {
   const matches = Array.from(text.matchAll(FINAL_BLOCK_RE));
@@ -737,6 +820,16 @@ export function sanitizeQQBotOutboundText(rawText: string): string {
   if (!next) return "";
   if (/^NO_REPLY$/i.test(next)) return "";
   return next;
+}
+
+function formatQQBotOutboundPreview(text: string, maxLength = 240): string {
+  const normalized = text.replace(/\r\n/g, "\n").trim();
+  if (!normalized) {
+    return '""';
+  }
+  const preview =
+    normalized.length > maxLength ? `${normalized.slice(0, Math.max(0, maxLength - 3))}...` : normalized;
+  return JSON.stringify(preview);
 }
 
 export function shouldSuppressQQBotTextWhenMediaPresent(rawText: string, sanitizedText: string): boolean {
@@ -787,6 +880,149 @@ export function evaluateReplyFinalOnlyDelivery(params: {
     return { skipDelivery: false, suppressText: true };
   }
   return { skipDelivery: true, suppressText: false };
+}
+
+function isQQBotC2CTarget(to: string): boolean {
+  const trimmed = to.trim();
+  const raw = trimmed.startsWith("qqbot:") ? trimmed.slice("qqbot:".length) : trimmed;
+  return !raw.startsWith("group:") && !raw.startsWith("channel:");
+}
+
+function splitQQBotMarkdownTransportMediaUrls(mediaUrls: string[]): {
+  markdownImageUrls: string[];
+  mediaQueue: string[];
+} {
+  const markdownImageUrls: string[] = [];
+  const mediaQueue: string[] = [];
+  const seenMarkdownImages = new Set<string>();
+  const seenMedia = new Set<string>();
+
+  for (const rawUrl of mediaUrls) {
+    const next = rawUrl.trim();
+    if (!next) continue;
+
+    if (isQQBotHttpImageUrl(next)) {
+      if (seenMarkdownImages.has(next)) continue;
+      seenMarkdownImages.add(next);
+      markdownImageUrls.push(next);
+      continue;
+    }
+
+    if (seenMedia.has(next)) continue;
+    seenMedia.add(next);
+    mediaQueue.push(next);
+  }
+
+  return { markdownImageUrls, mediaQueue };
+}
+
+export function hasQQBotMarkdownTable(text: string): boolean {
+  const lines = text.replace(/\r\n/g, "\n").split("\n");
+  for (let index = 0; index < lines.length - 1; index += 1) {
+    const header = lines[index]?.trim() ?? "";
+    const separator = lines[index + 1]?.trim() ?? "";
+    if (!header.includes("|") || !MARKDOWN_TABLE_SEPARATOR_RE.test(separator)) {
+      continue;
+    }
+
+    const headerColumns = header.split("|").filter((column) => column.trim()).length;
+    const separatorColumns = separator.split("|").filter((column) => column.trim()).length;
+    if (headerColumns >= 2 && separatorColumns >= 2) {
+      return true;
+    }
+  }
+  return false;
+}
+
+export function resolveQQBotTextReplyRefs(params: {
+  to: string;
+  text: string;
+  markdownSupport: boolean;
+  c2cMarkdownDeliveryMode?: QQBotC2CMarkdownDeliveryMode;
+  replyToId?: string;
+  replyEventId?: string;
+}): {
+  forceProactive: boolean;
+  replyToId?: string;
+  replyEventId?: string;
+} {
+  const mode = params.c2cMarkdownDeliveryMode ?? "proactive-table-only";
+  const forceProactive =
+    params.markdownSupport &&
+    isQQBotC2CTarget(params.to) &&
+    (mode === "proactive-all" ||
+      (mode === "proactive-table-only" && hasQQBotMarkdownTable(params.text)));
+
+  if (!forceProactive) {
+    return {
+      forceProactive: false,
+      replyToId: params.replyToId,
+      replyEventId: params.replyEventId,
+    };
+  }
+
+  return {
+    forceProactive: true,
+    replyToId: undefined,
+    replyEventId: undefined,
+  };
+}
+
+export function appendQQBotBufferedText(bufferedTexts: string[], nextText: string): string[] {
+  const normalized = nextText.trim();
+  if (!normalized) return bufferedTexts;
+  if (bufferedTexts.length === 0) return [normalized];
+
+  const currentCombined = bufferedTexts.join("\n\n");
+  if (currentCombined === normalized || currentCombined.includes(normalized)) {
+    return bufferedTexts;
+  }
+  if (normalized.includes(currentCombined)) {
+    return [normalized];
+  }
+
+  const last = bufferedTexts[bufferedTexts.length - 1];
+  if (last === normalized) {
+    return bufferedTexts;
+  }
+
+  return [...bufferedTexts, normalized];
+}
+
+export function normalizeQQBotRenderedMarkdown(text: string): string {
+  if (!text.trim()) return "";
+
+  let next = text.trim();
+  let changed = false;
+
+  next = next.replace(
+    EXPLICIT_MARKDOWN_FENCE_RE,
+    (block, leadingLineBreak: string, _fence: string, inner: string) => {
+      const normalizedInner = inner.trim();
+      if (!normalizedInner) {
+        return block;
+      }
+      changed = true;
+      return `${leadingLineBreak}${normalizedInner}`;
+    }
+  );
+
+  next = next.replace(
+    GENERIC_MARKDOWN_FENCE_RE,
+    (block, leadingLineBreak: string, _fence: string, inner: string) => {
+      const normalizedInner = inner.trim();
+      if (!normalizedInner) {
+        return block;
+      }
+      if (!hasQQBotMarkdownTable(normalizedInner)) {
+        return block;
+      }
+      changed = true;
+      return `${leadingLineBreak}${normalizedInner}`;
+    }
+  );
+
+  return changed ? next.trim() : text.trim();
 }
 
 export async function sendQQBotMediaWithFallback(params: {
@@ -885,15 +1121,10 @@ async function dispatchToAgent(params: {
   qqCfg: QQBotAccountConfig;
   accountId: string;
   logger: Logger;
+  route: QQBotAgentRoute;
 }): Promise<void> {
-  const { inbound, cfg, qqCfg, accountId, logger } = params;
+  const { inbound, cfg, qqCfg, accountId, logger, route } = params;
   const runtime = getQQBotRuntime();
-  const routing = runtime.channel?.routing?.resolveAgentRoute;
-  if (!routing) {
-    logger.warn("routing API not available");
-    return;
-  }
-
   const target = resolveChatTarget(inbound);
   if (inbound.c2cOpenid) {
     const typing = await qqbotOutbound.sendTyping({
@@ -907,12 +1138,6 @@ async function dispatchToAgent(params: {
       logger.warn(`sendTyping failed: ${typing.error}`);
     }
   }
-  const route = routing({
-    cfg,
-    channel: "qqbot",
-    accountId,
-    peer: { kind: target.peerKind, id: target.peerId },
-  });
 
   const replyApi = runtime.channel?.reply;
   if (!replyApi) {
@@ -1122,6 +1347,106 @@ async function dispatchToAgent(params: {
     };
 
     const replyFinalOnly = qqCfg.replyFinalOnly ?? false;
+    const markdownSupport = qqCfg.markdownSupport ?? true;
+    const c2cMarkdownDeliveryMode = qqCfg.c2cMarkdownDeliveryMode ?? "proactive-table-only";
+    const useC2CMarkdownTransport = markdownSupport && isQQBotC2CTarget(target.to);
+    let bufferedC2CMarkdownTexts: string[] = [];
+    let bufferedC2CMarkdownMediaUrls: string[] = [];
+    const bufferedC2CMarkdownMediaSeen = new Set<string>();
+
+    const bufferC2CMarkdownMedia = (url?: string): void => {
+      const next = url?.trim();
+      if (!next || bufferedC2CMarkdownMediaSeen.has(next)) return;
+      bufferedC2CMarkdownMediaSeen.add(next);
+      bufferedC2CMarkdownMediaUrls.push(next);
+    };
+
+    const flushBufferedC2CMarkdownReply = async (): Promise<void> => {
+      if (
+        !useC2CMarkdownTransport ||
+        (bufferedC2CMarkdownTexts.length === 0 && bufferedC2CMarkdownMediaUrls.length === 0)
+      ) {
+        bufferedC2CMarkdownTexts = [];
+        bufferedC2CMarkdownMediaUrls = [];
+        bufferedC2CMarkdownMediaSeen.clear();
+        return;
+      }
+
+      const combinedText = bufferedC2CMarkdownTexts.join("\n\n").trim();
+      const combinedMediaUrls = [...bufferedC2CMarkdownMediaUrls];
+      bufferedC2CMarkdownTexts = [];
+      bufferedC2CMarkdownMediaUrls = [];
+      bufferedC2CMarkdownMediaSeen.clear();
+
+      const normalizedCombinedText = normalizeQQBotRenderedMarkdown(combinedText);
+      const { markdownImageUrls, mediaQueue } = splitQQBotMarkdownTransportMediaUrls(combinedMediaUrls);
+      const finalMarkdownText = await normalizeQQBotMarkdownImages({
+        text: normalizedCombinedText,
+        appendImageUrls: markdownImageUrls,
+      });
+      const textReplyRefs = resolveQQBotTextReplyRefs({
+        to: target.to,
+        text: finalMarkdownText || normalizedCombinedText,
+        markdownSupport,
+        c2cMarkdownDeliveryMode,
+        replyToId: inbound.messageId,
+        replyEventId: inbound.eventId,
+      });
+      const textSegments = finalMarkdownText ? [finalMarkdownText] : [];
+      const deliveryLabel = textReplyRefs.forceProactive
+        ? "c2c-markdown-proactive"
+        : "c2c-markdown-passive";
+      logger.info(
+        `delivery=${deliveryLabel} to=${target.to} segments=${textSegments.length} media=${mediaQueue.length} ` +
+          `replyToId=${textReplyRefs.replyToId ? "yes" : "no"} replyEventId=${textReplyRefs.replyEventId ? "yes" : "no"} ` +
+          `tableMode=${String(resolvedTableMode)} chunkMode=${String(chunkMode ?? "default")}`
+      );
+
+      await sendQQBotMediaWithFallback({
+        qqCfg,
+        to: target.to,
+        mediaQueue,
+        replyToId: textReplyRefs.replyToId,
+        replyEventId: textReplyRefs.replyEventId,
+        logger,
+        onDelivered: () => {
+          markReplyDelivered();
+        },
+        onError: (error) => {
+          markGroupMessageInterfaceBlocked(error);
+        },
+      });
+
+      if (!finalMarkdownText) {
+        return;
+      }
+
+      for (let segmentIndex = 0; segmentIndex < textSegments.length; segmentIndex += 1) {
+        const segment = textSegments[segmentIndex] ?? "";
+        const chunks = chunkText(segment);
+        for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex += 1) {
+          const chunk = chunks[chunkIndex] ?? "";
+          logger.info(
+            `delivery=${deliveryLabel} segment=${segmentIndex + 1}/${textSegments.length} ` +
+              `chunk=${chunkIndex + 1}/${chunks.length} preview=${formatQQBotOutboundPreview(chunk)}`
+          );
+          const result = await qqbotOutbound.sendText({
+            cfg: { channels: { qqbot: qqCfg } },
+            to: target.to,
+            text: chunk,
+            replyToId: textReplyRefs.replyToId,
+            replyEventId: textReplyRefs.replyEventId,
+          });
+          if (result.error) {
+            logger.error(`send buffered QQ markdown reply failed: ${result.error}`);
+            markGroupMessageInterfaceBlocked(result.error);
+          } else {
+            logger.info(`sent buffered QQ markdown reply (len=${chunk.length})`);
+            markReplyDelivered();
+          }
+        }
+      }
+    };
 
     const deliver = async (payload: unknown, info?: { kind?: string }): Promise<void> => {
       const typed = payload as { text?: string; mediaUrl?: string; mediaUrls?: string[] } | undefined;
@@ -1165,18 +1490,37 @@ async function dispatchToAgent(params: {
       const suppressText = deliveryDecision.suppressText || suppressEchoText;
       const textToSend = suppressText ? "" : cleanedText;
 
+      if (useC2CMarkdownTransport) {
+        if (textToSend) {
+          bufferedC2CMarkdownTexts = appendQQBotBufferedText(bufferedC2CMarkdownTexts, textToSend);
+        }
+
+        for (const url of mediaQueue) {
+          bufferC2CMarkdownMedia(url);
+        }
+        return;
+      }
+
       if (textToSend) {
         const converted = textApi?.convertMarkdownTables
           ? textApi.convertMarkdownTables(textToSend, resolvedTableMode)
           : textToSend;
+        const textReplyRefs = resolveQQBotTextReplyRefs({
+          to: target.to,
+          text: converted,
+          markdownSupport,
+          c2cMarkdownDeliveryMode,
+          replyToId: inbound.messageId,
+          replyEventId: inbound.eventId,
+        });
         const chunks = chunkText(converted);
         for (const chunk of chunks) {
           const result = await qqbotOutbound.sendText({
             cfg: { channels: { qqbot: qqCfg } },
             to: target.to,
             text: chunk,
-            replyToId: inbound.messageId,
-            replyEventId: inbound.eventId,
+            replyToId: textReplyRefs.replyToId,
+            replyEventId: textReplyRefs.replyEventId,
           });
           if (result.error) {
             logger.error(`sendText failed: ${result.error}`);
@@ -1222,6 +1566,7 @@ async function dispatchToAgent(params: {
           },
         },
       });
+      await flushBufferedC2CMarkdownReply();
     } else {
       const dispatcherResult = replyApi.createReplyDispatcherWithTyping
         ? replyApi.createReplyDispatcherWithTyping({
@@ -1256,6 +1601,7 @@ async function dispatchToAgent(params: {
       });
 
       dispatcherResult.markDispatchIdle?.();
+      await flushBufferedC2CMarkdownReply();
     }
 
     const noReplyFallback = resolveQQBotNoReplyFallback({
@@ -1373,11 +1719,33 @@ export async function handleQQBotDispatch(params: DispatchParams): Promise<void>
     return;
   }
 
-  await dispatchToAgent({
-    inbound: { ...inbound, content },
+  const runtime = getQQBotRuntime();
+  const routing = runtime.channel?.routing?.resolveAgentRoute;
+  if (!routing) {
+    logger.warn("routing API not available");
+    return;
+  }
+
+  const target = resolveChatTarget(inbound);
+  const route = routing({
     cfg: params.cfg,
-    qqCfg,
+    channel: "qqbot",
     accountId,
-    logger,
-  });
+    peer: { kind: target.peerKind, id: target.peerId },
+  }) as QQBotAgentRoute;
+  const queueKey = buildSessionDispatchQueueKey(route);
+  if (sessionDispatchQueue.has(queueKey)) {
+    logger.info(`session busy; queueing inbound dispatch sessionKey=${route.sessionKey}`);
+  }
+
+  await runSerializedSessionDispatch(queueKey, async () =>
+    dispatchToAgent({
+      inbound: { ...inbound, content },
+      cfg: params.cfg,
+      qqCfg,
+      accountId,
+      logger,
+      route,
+    })
+  );
 }
