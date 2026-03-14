@@ -12,6 +12,7 @@ const outboundMocks = vi.hoisted(() => ({
 }));
 
 const proactiveMocks = vi.hoisted(() => ({
+  getKnownQQBotTarget: vi.fn(),
   upsertKnownQQBotTarget: vi.fn(),
 }));
 
@@ -24,6 +25,7 @@ vi.mock("./outbound.js", () => ({
 }));
 
 vi.mock("./proactive.js", () => ({
+  getKnownQQBotTarget: proactiveMocks.getKnownQQBotTarget,
   upsertKnownQQBotTarget: proactiveMocks.upsertKnownQQBotTarget,
 }));
 
@@ -245,9 +247,11 @@ describe("QQBot C2C markdown transport", () => {
     });
   });
 
-  it("sends verbose non-final c2c markdown payloads immediately instead of merging them", async () => {
+  it("keeps assistant notes interleaved with verbose c2c markdown payloads", async () => {
     installReplyRuntime([
+      { text: "我先说明一下当前进展。", kind: "block" },
       { text: "✉️ Message", kind: "tool" },
+      { text: "我继续处理这个请求。", kind: "block" },
       { text: "🧹 Auto-compaction complete (count 8).", kind: "tool" },
       { text: "我把这张图重新发你一遍。", kind: "final" },
     ]);
@@ -277,9 +281,11 @@ describe("QQBot C2C markdown transport", () => {
       logger,
     });
 
-    expect(outboundMocks.sendText).toHaveBeenCalledTimes(3);
+    expect(outboundMocks.sendText).toHaveBeenCalledTimes(5);
     expect(outboundMocks.sendText.mock.calls.map((call) => call[0]?.text)).toEqual([
+      "我先说明一下当前进展。",
       "✉️ Message",
+      "我继续处理这个请求。",
       "🧹 Auto-compaction complete (count 8).",
       "我把这张图重新发你一遍。",
     ]);

@@ -39,7 +39,11 @@ import {
   normalizeQQBotMarkdownImages,
 } from "./markdown-images.js";
 import { qqbotOutbound } from "./outbound.js";
-import { upsertKnownQQBotTarget, type KnownQQBotTarget } from "./proactive.js";
+import {
+  getKnownQQBotTarget,
+  upsertKnownQQBotTarget,
+  type KnownQQBotTarget,
+} from "./proactive.js";
 import {
   formatRefEntryForAgent,
   getRefIndex,
@@ -69,6 +73,14 @@ type QQBotAgentRoute = {
   agentId?: string;
   mainSessionKey?: string;
   effectiveSessionKey?: string;
+};
+
+type QQBotSenderNameResolution = {
+  displayName: string;
+  persistentDisplayName?: string;
+  source: "known-target" | "account-alias" | "global-alias" | "stable-id";
+  matchedAliasKey?: string;
+  knownTargetDisplayName?: string;
 };
 
 const sessionDispatchQueue = new Map<string, Promise<void>>();
@@ -154,6 +166,110 @@ async function runSerializedSessionDispatch<T>(
 function toString(value: unknown): string | undefined {
   if (typeof value === "string" && value.trim()) return value;
   return undefined;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+  return value as Record<string, unknown>;
+}
+
+function normalizeQQBotDisplayAliasesMap(raw: unknown): Record<string, string> {
+  if (!raw || typeof raw !== "object") {
+    return {};
+  }
+
+  const aliases: Record<string, string> = {};
+  for (const [rawKey, rawValue] of Object.entries(raw as Record<string, unknown>)) {
+    const key = rawKey.trim();
+    const value = toString(rawValue);
+    if (!key || !value) {
+      continue;
+    }
+    aliases[key] = value;
+  }
+  return aliases;
+}
+
+function resolveQQBotDisplayAliasMaps(
+  cfg: PluginConfig | undefined,
+  accountId: string
+): {
+  globalAliases: Record<string, string>;
+  accountAliases: Record<string, string>;
+} {
+  const qqbot = cfg?.channels?.qqbot;
+  return {
+    globalAliases: normalizeQQBotDisplayAliasesMap(qqbot?.displayAliases),
+    accountAliases: normalizeQQBotDisplayAliasesMap(qqbot?.accounts?.[accountId]?.displayAliases),
+  };
+}
+
+function resolveQQBotSenderName(params: {
+  inbound: QQInboundMessage;
+  cfg?: PluginConfig;
+  accountId: string;
+}): QQBotSenderNameResolution {
+  const { inbound, cfg, accountId } = params;
+  const stableId = inbound.c2cOpenid?.trim() || inbound.senderId.trim();
+  const { globalAliases, accountAliases } = resolveQQBotDisplayAliasMaps(cfg, accountId);
+
+  if (inbound.type === "direct") {
+    const knownTarget = stableId ? getKnownQQBotTarget({ accountId, target: `user:${stableId}` }) : undefined;
+    const knownTargetDisplayName = knownTarget?.displayName?.trim();
+    if (knownTargetDisplayName) {
+      return {
+        displayName: knownTargetDisplayName,
+        persistentDisplayName: knownTargetDisplayName,
+        source: "known-target",
+        knownTargetDisplayName,
+      };
+    }
+
+    const aliasKeys = [...new Set([`user:${stableId}`, stableId, inbound.senderId.trim()].filter(Boolean))];
+    for (const aliasKey of aliasKeys) {
+      const alias = accountAliases[aliasKey];
+      if (alias) {
+        return {
+          displayName: alias,
+          persistentDisplayName: alias,
+          source: "account-alias",
+          matchedAliasKey: aliasKey,
+        };
+      }
+    }
+    for (const aliasKey of aliasKeys) {
+      const alias = globalAliases[aliasKey];
+      if (alias) {
+        return {
+          displayName: alias,
+          persistentDisplayName: alias,
+          source: "global-alias",
+          matchedAliasKey: aliasKey,
+        };
+      }
+    }
+  }
+
+  return {
+    displayName: stableId,
+    source: "stable-id",
+  };
+}
+
+function logQQBotSenderNameResolution(params: {
+  logger: Logger;
+  inbound: QQInboundMessage;
+  accountId: string;
+  resolution: QQBotSenderNameResolution;
+}): void {
+  const { logger, inbound, accountId, resolution } = params;
+  logger.debug?.(
+    `[display-name] accountId=${accountId} type=${inbound.type} senderId=${inbound.senderId} ` +
+      `knownTarget=${resolution.knownTargetDisplayName ?? "-"} alias=${resolution.matchedAliasKey ?? "-"} ` +
+      `final=${JSON.stringify(resolution.displayName)} source=${resolution.source}`
+  );
 }
 
 function toNumber(value: unknown): number | undefined {
@@ -632,7 +748,7 @@ function parseC2CMessage(data: unknown, fallbackEventId?: string): QQInboundMess
   const id = toString(payload.id);
   const eventId = resolveEventId(payload, fallbackEventId);
   const timestamp = toNumber(payload.timestamp) ?? Date.now();
-  const author = (payload.author ?? {}) as Record<string, unknown>;
+  const author = asRecord(payload.author) ?? {};
   const senderId = toString(author.user_openid);
   if ((!text && attachments.length === 0) || !id || !senderId) return null;
 
@@ -640,7 +756,6 @@ function parseC2CMessage(data: unknown, fallbackEventId?: string): QQInboundMess
     type: "direct",
     senderId,
     c2cOpenid: senderId,
-    senderName: toString(author.username),
     content: text,
     attachments: attachments.length > 0 ? attachments : undefined,
     messageId: id,
@@ -658,14 +773,13 @@ function parseGroupMessage(data: unknown, fallbackEventId?: string): QQInboundMe
   const eventId = resolveEventId(payload, fallbackEventId);
   const timestamp = toNumber(payload.timestamp) ?? Date.now();
   const groupOpenid = toString(payload.group_openid);
-  const author = (payload.author ?? {}) as Record<string, unknown>;
+  const author = asRecord(payload.author) ?? {};
   const senderId = toString(author.member_openid);
   if ((!text && attachments.length === 0) || !id || !senderId || !groupOpenid) return null;
 
   return {
     type: "group",
     senderId,
-    senderName: toString(author.nickname) ?? toString(author.username),
     content: text,
     attachments: attachments.length > 0 ? attachments : undefined,
     messageId: id,
@@ -684,14 +798,13 @@ function parseChannelMessage(data: unknown, fallbackEventId?: string): QQInbound
   const timestamp = toNumber(payload.timestamp) ?? Date.now();
   const channelId = toString(payload.channel_id);
   const guildId = toString(payload.guild_id);
-  const author = (payload.author ?? {}) as Record<string, unknown>;
+  const author = asRecord(payload.author) ?? {};
   const senderId = toString(author.id);
   if ((!text && attachments.length === 0) || !id || !senderId || !channelId) return null;
 
   return {
     type: "channel",
     senderId,
-    senderName: toString(author.username),
     content: text,
     attachments: attachments.length > 0 ? attachments : undefined,
     messageId: id,
@@ -710,14 +823,13 @@ function parseDirectMessage(data: unknown, fallbackEventId?: string): QQInboundM
   const eventId = resolveEventId(payload, fallbackEventId);
   const timestamp = toNumber(payload.timestamp) ?? Date.now();
   const guildId = toString(payload.guild_id);
-  const author = (payload.author ?? {}) as Record<string, unknown>;
+  const author = asRecord(payload.author) ?? {};
   const senderId = toString(author.id);
   if ((!text && attachments.length === 0) || !id || !senderId) return null;
 
   return {
     type: "direct",
     senderId,
-    senderName: toString(author.username),
     content: text,
     attachments: attachments.length > 0 ? attachments : undefined,
     messageId: id,
@@ -805,8 +917,9 @@ function resolveEnvelopeFrom(event: QQInboundMessage): string {
 export function resolveKnownQQBotTargetFromInbound(params: {
   inbound: QQInboundMessage;
   accountId: string;
+  persistentDisplayName?: string;
 }): KnownQQBotTarget | undefined {
-  const { inbound, accountId } = params;
+  const { inbound, accountId, persistentDisplayName } = params;
 
   if (inbound.type === "direct") {
     if (!inbound.c2cOpenid?.trim()) {
@@ -816,7 +929,7 @@ export function resolveKnownQQBotTargetFromInbound(params: {
       accountId,
       kind: "user",
       target: `user:${inbound.c2cOpenid}`,
-      displayName: inbound.senderName,
+      ...(persistentDisplayName ? { displayName: persistentDisplayName } : {}),
       sourceChatType: "direct",
       firstSeenAt: inbound.timestamp,
       lastSeenAt: inbound.timestamp,
@@ -828,7 +941,7 @@ export function resolveKnownQQBotTargetFromInbound(params: {
       accountId,
       kind: "group",
       target: `group:${inbound.groupOpenid}`,
-      displayName: inbound.senderName,
+      ...(persistentDisplayName ? { displayName: persistentDisplayName } : {}),
       sourceChatType: "group",
       firstSeenAt: inbound.timestamp,
       lastSeenAt: inbound.timestamp,
@@ -840,7 +953,7 @@ export function resolveKnownQQBotTargetFromInbound(params: {
       accountId,
       kind: "channel",
       target: `channel:${inbound.channelId}`,
-      displayName: inbound.senderName,
+      ...(persistentDisplayName ? { displayName: persistentDisplayName } : {}),
       sourceChatType: "channel",
       firstSeenAt: inbound.timestamp,
       lastSeenAt: inbound.timestamp,
@@ -1085,8 +1198,12 @@ export function evaluateReplyFinalOnlyDelivery(params: {
 
 function isQQBotC2CTarget(to: string): boolean {
   const trimmed = to.trim();
-  const raw = trimmed.startsWith("qqbot:") ? trimmed.slice("qqbot:".length) : trimmed;
-  return !raw.startsWith("group:") && !raw.startsWith("channel:");
+  const raw =
+    trimmed.slice(0, "qqbot:".length).toLowerCase() === "qqbot:"
+      ? trimmed.slice("qqbot:".length)
+      : trimmed;
+  const normalizedRaw = raw.toLowerCase();
+  return !normalizedRaw.startsWith("group:") && !normalizedRaw.startsWith("channel:");
 }
 
 function splitQQBotMarkdownTransportMediaUrls(mediaUrls: string[]): {
@@ -1546,40 +1663,55 @@ async function dispatchToAgent(params: {
       finalCtx.BodyForAgent = appendCronHiddenPrompt(agentBody);
     }
 
-    if (storePath && sessionApi?.recordInboundSession) {
-      try {
-        const mainSessionKeyRaw = route.mainSessionKey;
-        const mainSessionKey =
-          typeof mainSessionKeyRaw === "string" && mainSessionKeyRaw.trim()
-            ? mainSessionKeyRaw.trim()
-            : undefined;
-        const isGroup = inbound.type === "group" || inbound.type === "channel";
-        const updateLastRoute =
-          !isGroup
-            ? {
-                sessionKey: mainSessionKey ?? route.sessionKey,
-                channel: "qqbot",
-                to: stableTo,
-                accountId: outboundAccountId,
-              }
-            : undefined;
+    if (storePath) {
+      const mainSessionKeyRaw = route.mainSessionKey;
+      const mainSessionKey =
+        typeof mainSessionKeyRaw === "string" && mainSessionKeyRaw.trim()
+          ? mainSessionKeyRaw.trim()
+          : undefined;
+      const isGroup = inbound.type === "group" || inbound.type === "channel";
+      const updateLastRoute =
+        !isGroup
+          ? {
+              sessionKey: mainSessionKey ?? route.sessionKey,
+              channel: "qqbot",
+              to: stableTo,
+              accountId: outboundAccountId,
+            }
+          : undefined;
 
-        const recordSessionKey =
-          typeof finalCtx.SessionKey === "string" && finalCtx.SessionKey.trim()
-            ? finalCtx.SessionKey
-            : routeSessionKey;
+      const recordSessionKey =
+        typeof finalCtx.SessionKey === "string" && finalCtx.SessionKey.trim()
+          ? finalCtx.SessionKey
+          : routeSessionKey;
 
-        await sessionApi.recordInboundSession({
-          storePath,
-          sessionKey: recordSessionKey,
-          ctx: finalCtx,
-          updateLastRoute,
-          onRecordError: (err: unknown) => {
-            logger.warn(`failed to record inbound session: ${String(err)}`);
-          },
-        });
-      } catch (err) {
-        logger.warn(`failed to record inbound session: ${String(err)}`);
+      if (sessionApi?.recordInboundSession) {
+        try {
+          await sessionApi.recordInboundSession({
+            storePath,
+            sessionKey: recordSessionKey,
+            ctx: finalCtx,
+            updateLastRoute,
+            onRecordError: (err: unknown) => {
+              logger.warn(`failed to record inbound session: ${String(err)}`);
+            },
+          });
+        } catch (err) {
+          logger.warn(`failed to record inbound session: ${String(err)}`);
+        }
+      }
+
+      if (sessionApi?.recordSessionMetaFromInbound) {
+        try {
+          await sessionApi.recordSessionMetaFromInbound({
+            storePath,
+            sessionKey: recordSessionKey,
+            ctx: finalCtx,
+            createIfMissing: true,
+          });
+        } catch (err) {
+          logger.warn(`failed to record inbound session meta: ${String(err)}`);
+        }
       }
     }
 
@@ -1611,7 +1743,8 @@ async function dispatchToAgent(params: {
     const replyFinalOnly = qqCfg.replyFinalOnly ?? false;
     const markdownSupport = qqCfg.markdownSupport ?? true;
     const c2cMarkdownDeliveryMode = qqCfg.c2cMarkdownDeliveryMode ?? "proactive-table-only";
-    const useC2CMarkdownTransport = markdownSupport && isQQBotC2CTarget(target.to);
+    const isC2CTarget = isQQBotC2CTarget(target.to);
+    const useC2CMarkdownTransport = markdownSupport && isC2CTarget;
     let bufferedC2CMarkdownTexts: string[] = [];
     let bufferedC2CMarkdownMediaUrls: string[] = [];
     const bufferedC2CMarkdownMediaSeen = new Set<string>();
@@ -1838,8 +1971,36 @@ async function dispatchToAgent(params: {
     };
 
     const humanDelay = replyApi.resolveHumanDelayConfig?.(cfg, route.agentId);
+    const dispatchDirect = replyApi.dispatchReplyWithDispatcher;
     const dispatchBuffered = replyApi.dispatchReplyWithBufferedBlockDispatcher;
-    if (dispatchBuffered) {
+    const streamingReplyOptions =
+      isC2CTarget && !replyFinalOnly
+        ? {
+            disableBlockStreaming: false,
+          }
+        : undefined;
+    if (isC2CTarget && !replyFinalOnly && dispatchDirect) {
+      logger.debug(`[dispatch] mode=direct session=${routeSessionKey} to=${target.to}`);
+      await dispatchDirect({
+        ctx: finalCtx,
+        cfg,
+        dispatcherOptions: {
+          deliver,
+          humanDelay,
+          onError: (err: unknown, info: { kind: string }) => {
+            logger.error(`${info.kind} reply failed: ${String(err)}`);
+          },
+          onSkip: (_payload: unknown, info: { kind: string; reason: string }) => {
+            if (info.reason !== "silent") {
+              logger.info(`reply skipped: ${info.reason}`);
+            }
+          },
+        },
+        replyOptions: streamingReplyOptions,
+      });
+      await flushBufferedC2CMarkdownReply();
+    } else if (dispatchBuffered) {
+      logger.debug(`[dispatch] mode=buffered session=${routeSessionKey} to=${target.to}`);
       await dispatchBuffered({
         ctx: finalCtx,
         cfg,
@@ -1855,9 +2016,11 @@ async function dispatchToAgent(params: {
             }
           },
         },
+        replyOptions: streamingReplyOptions,
       });
       await flushBufferedC2CMarkdownReply();
     } else {
+      logger.debug(`[dispatch] mode=legacy session=${routeSessionKey} to=${target.to}`);
       const dispatcherResult = replyApi.createReplyDispatcherWithTyping
         ? replyApi.createReplyDispatcherWithTyping({
             deliver,
@@ -1887,7 +2050,12 @@ async function dispatchToAgent(params: {
         ctx: finalCtx,
         cfg,
         dispatcher: dispatcherResult.dispatcher,
-        replyOptions: dispatcherResult.replyOptions,
+        replyOptions: {
+          ...(typeof dispatcherResult.replyOptions === "object" && dispatcherResult.replyOptions
+            ? dispatcherResult.replyOptions
+            : {}),
+          ...(streamingReplyOptions ?? {}),
+        },
       });
 
       dispatcherResult.markDispatchIdle?.();
@@ -1980,20 +2148,43 @@ export async function handleQQBotDispatch(params: DispatchParams): Promise<void>
     return;
   }
 
-  const content = inbound.content.trim();
+  const senderNameResolution = resolveQQBotSenderName({
+    inbound,
+    cfg: params.cfg,
+    accountId,
+  });
+  const resolvedInbound: QQInboundMessage = {
+    ...inbound,
+    senderName: senderNameResolution.displayName,
+  };
+  logQQBotSenderNameResolution({
+    logger,
+    inbound,
+    accountId,
+    resolution: senderNameResolution,
+  });
+
+  const content = resolvedInbound.content.trim();
   const inboundLogContent = sanitizeInboundLogText(
     resolveInboundLogContent({
       content,
-      attachments: inbound.attachments,
+      attachments: resolvedInbound.attachments,
     })
   );
-  logger.info(`[inbound-user] accountId=${accountId} senderId=${inbound.senderId} content=${inboundLogContent}`);
+  logger.info(
+    `[inbound-user] accountId=${accountId} senderId=${resolvedInbound.senderId} ` +
+      `senderName=${JSON.stringify(resolvedInbound.senderName ?? resolvedInbound.senderId)} content=${inboundLogContent}`
+  );
 
-  if (!shouldHandleMessage(inbound, qqCfg, logger)) {
+  if (!shouldHandleMessage(resolvedInbound, qqCfg, logger)) {
     return;
   }
 
-  const knownTarget = resolveKnownQQBotTargetFromInbound({ inbound, accountId });
+  const knownTarget = resolveKnownQQBotTargetFromInbound({
+    inbound: resolvedInbound,
+    accountId,
+    persistentDisplayName: senderNameResolution.persistentDisplayName,
+  });
   if (knownTarget) {
     try {
       upsertKnownQQBotTarget({ target: knownTarget });
@@ -2002,7 +2193,7 @@ export async function handleQQBotDispatch(params: DispatchParams): Promise<void>
     }
   }
 
-  const attachmentCount = inbound.attachments?.length ?? 0;
+  const attachmentCount = resolvedInbound.attachments?.length ?? 0;
   if (attachmentCount > 0) {
     logger.info(`inbound message includes ${attachmentCount} attachment(s)`);
   }
@@ -2017,7 +2208,7 @@ export async function handleQQBotDispatch(params: DispatchParams): Promise<void>
     return;
   }
 
-  const target = resolveChatTarget(inbound);
+  const target = resolveChatTarget(resolvedInbound);
   const route = routing({
     cfg: params.cfg,
     channel: "qqbot",
@@ -2025,7 +2216,7 @@ export async function handleQQBotDispatch(params: DispatchParams): Promise<void>
     peer: { kind: target.peerKind, id: target.peerId },
   }) as QQBotAgentRoute;
   const effectiveSessionKey = resolveQQBotEffectiveSessionKey({
-    inbound,
+    inbound: resolvedInbound,
     route,
     accountId,
   });
@@ -2044,7 +2235,7 @@ export async function handleQQBotDispatch(params: DispatchParams): Promise<void>
 
   await runSerializedSessionDispatch(queueKey, async () =>
     dispatchToAgent({
-      inbound: { ...inbound, content },
+      inbound: { ...resolvedInbound, content },
       cfg: params.cfg,
       qqCfg,
       accountId,

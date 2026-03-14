@@ -125,6 +125,8 @@
 - `qqbot` 现在能看懂 QQ 私聊里的“引用上一条消息”。用户问“这个是什么”“你刚才说的哪个文件”时，模型会一起参考被引用的那条内容来回答。
 - 引用内容会自动缓存在本地 `~/.openclaw/qqbot/data/ref-index.jsonl`，就算网关重启，之前的引用关系也还能继续识别。
 - 被引用的内容不只支持纯文本，也支持图片、语音、视频、文件这类消息的摘要；如果本地确实找不到旧消息，也不会再把“原始内容不可用”这种占位词喂给模型。
+- `qqbot` 新增内置 `qqbot-contact-send` skill，支持基于 `~/.openclaw/qqbot/data/known-targets.json` 按联系人备注/显示名解析发送对象，并默认优先使用当前会话的 `accountId` 过滤目标，减少多账号场景下误发给同名联系人。
+- 这个 skill 现在会随 QQBot 插件自动注册到新会话的 `<available_skills>`，模型可直接利用它生成 `message` tool 所需的发送参数，不需要再手工复制到 workspace 或 `~/.openclaw/skills`；正式安装的 npm 包也会一并带上对应 skill 文件和脚本。
 
 ### 2026-03-12
 - `qqbot` 在 QQ 私聊里开启 `/verbose on` 且 `replyFinalOnly=false` 后，执行过程中的工具输出和日志会边跑边发，一条一条实时出现，不会再等到最后一起发。
@@ -456,6 +458,8 @@ openclaw config set channels.qqbot.c2cMarkdownDeliveryMode proactive-all
 - 已知目标默认保存到 `~/.openclaw/qqbot/data/known-targets.json`
 - 旧版 `~/.openclaw/data/qqbot/known-targets.json` 会在首次访问时自动迁移到新路径
 - 注册表会记录通过策略校验的 `user:` / `group:` / `channel:` 目标
+- 可以直接手工编辑其中的 `displayName`，把它当成 QQ 私聊用户的正式备注
+- 私聊入站显示名会优先取 `known-targets.json` 里已有的 `displayName`；如果没有，再回退到 `displayAliases`，最后才使用平台 ID
 - 推荐主动发送时使用 `user:` 与 `group:` 目标
 
 ```ts
@@ -479,6 +483,33 @@ await sendProactiveQQBotMessage({
   text: "这是一条主动发送的 QQ 消息",
 });
 ```
+
+如果 QQ 私聊里经常只能看到 `openid`，推荐先在 `~/.openclaw/qqbot/data/known-targets.json` 里手工补 `displayName` 作为正式备注；也可以继续在配置里补 alias：
+
+```json
+{
+  "channels": {
+    "qqbot": {
+      "displayAliases": {
+        "user:u-123456": "Alice"
+      },
+      "accounts": {
+        "bot2": {
+          "displayAliases": {
+            "user:u-123456": "Alice (bot2)"
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+QQBot 插件现在也会随包自动提供 `qqbot-contact-send` skill：
+
+- 插件启用后，新会话会自动在 `<available_skills>` 中看到 `qqbot-contact-send`
+- 不需要再把 `extensions/qqbot/skills/qqbot-contact-send` 手工复制到 workspace 或 `~/.openclaw/skills`
+- 如果 workspace 或 `~/.openclaw/skills` 里存在同名 skill，仍按 OpenClaw 的正常优先级覆盖插件内置版本
 
 </details>
 

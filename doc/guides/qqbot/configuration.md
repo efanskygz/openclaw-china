@@ -145,6 +145,7 @@ openclaw config set gateway.http.endpoints.chatCompletions.enabled true
 | enabled | boolean | true | 打开或关闭 QQ 渠道 |
 | appId | string | - | QQ 机器人后台里的 `AppID` |
 | clientSecret | string | - | QQ 机器人后台里的 `AppSecret` |
+| displayAliases | object | - | 私聊用户显示名 alias 映射。首期仅对 direct 用户生效，支持键 `user:<openid>`、`<openid>`、`senderId` |
 | dmPolicy | string | "open" | 谁可以直接私聊机器人。`open` 全开放，`pairing` 只允许已配对来源，`allowlist` 只允许白名单 |
 | groupPolicy | string | "open" | 群里谁可以触发机器人。`open` 全开放，`allowlist` 只允许白名单，`disabled` 直接关闭群聊处理 |
 | requireMention | boolean | true | 群里是否必须先 `@` 机器人，它才回复 |
@@ -250,6 +251,9 @@ openclaw config set channels.qqbot.c2cMarkdownDeliveryMode proactive-all
           "name": "主机器人",
           "appId": "1234567890",
           "clientSecret": "secret-1",
+          "displayAliases": {
+            "user:u-alice": "Alice"
+          },
           "markdownSupport": true,
           "dmPolicy": "open",
           "groupPolicy": "open",
@@ -271,6 +275,7 @@ openclaw config set channels.qqbot.c2cMarkdownDeliveryMode proactive-all
 > - 顶层配置（如 `enabled`、`dmPolicy`）作为默认值，账户内配置会覆盖顶层配置。
 > - `defaultAccount` 指定默认使用的账户 ID，不配置时默认为 `"default"`。
 > - 账户内未指定的字段会继承顶层配置。
+> - `displayAliases` 也是同样的规则；同一个 alias key 同时出现在顶层和账户内时，以账户内为准。
 > - 已知目标、引用缓存等本地数据也会按 `accountId` 分开记录，避免多个机器人串数据。
 
 多 agent 分流（bindings）示例：
@@ -322,6 +327,8 @@ openclaw daemon start
 - 旧版 `~/.openclaw/data/qqbot/known-targets.json` 会在首次访问时自动迁移到新路径
 - 机器人见过、并且通过策略校验的用户或群，会自动记录到这里
 - 多账号场景会按 `accountId` 分开记录
+- 你可以手工编辑其中的 `displayName`，把它当成 QQ 私聊用户的正式备注源
+- 私聊用户的 `displayName` 会优先使用 `known-targets.json` 里已有的 `displayName`；如果没有，再回退到 `displayAliases`，最后使用 `openid/senderId`
 - 目标格式如下：
   - 私聊用户：`user:<c2cOpenid>`
   - QQ 群：`group:<group_openid>`
@@ -385,7 +392,29 @@ await sendProactiveQQBotMessage({
 
 ---
 
-## 七、可选操作：开启语音转文本
+## 七、内置 Skill（自动加载）
+
+`qqbot` 插件现在会随包提供插件级 skill：`qqbot-contact-send`。
+
+- 目录位置：`extensions/qqbot/skills/qqbot-contact-send`
+- 只要 `qqbot` 插件处于启用状态，新会话就会自动把这个 skill 加入 `<available_skills>`
+- 无需再把该目录手工复制到 `<workspace>/skills` 或 `~/.openclaw/skills`
+- 如果 workspace 或全局技能目录里已经有同名 skill，仍按 OpenClaw 默认优先级覆盖插件内置版本
+
+这个 skill 主要用于：
+
+- 基于 `~/.openclaw/qqbot/data/known-targets.json` 按联系人名解析 QQBot 发送目标
+- 默认优先使用当前会话的 `accountId` 过滤联系人，降低多账号误发风险
+- 生成可直接传给 `message` tool 的发送参数
+
+如果你刚安装或升级了插件但还没看到该 skill，建议：
+
+1. 确认 `qqbot` 插件已启用
+2. 新开一个会话，或重启一次 gateway
+
+---
+
+## 八、可选操作：开启语音转文本
 
 如果你希望 QQ 语音消息可以自动转文字后再交给 Agent 处理，可按下面步骤配置腾讯云 ASR（录音文件识别极速版）。
 

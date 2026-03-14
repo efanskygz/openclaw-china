@@ -8,6 +8,7 @@ const outboundMocks = vi.hoisted(() => ({
 }));
 
 const proactiveMocks = vi.hoisted(() => ({
+  getKnownQQBotTarget: vi.fn(),
   upsertKnownQQBotTarget: vi.fn(),
 }));
 
@@ -20,6 +21,7 @@ vi.mock("./outbound.js", () => ({
 }));
 
 vi.mock("./proactive.js", () => ({
+  getKnownQQBotTarget: proactiveMocks.getKnownQQBotTarget,
   upsertKnownQQBotTarget: proactiveMocks.upsertKnownQQBotTarget,
 }));
 
@@ -46,6 +48,7 @@ function setupSessionRuntime(params?: {
 }) {
   const readSessionUpdatedAt = vi.fn().mockReturnValue(null);
   const recordInboundSession = vi.fn().mockResolvedValue(undefined);
+  const recordSessionMetaFromInbound = vi.fn().mockResolvedValue(undefined);
   const dispatchReplyWithBufferedBlockDispatcher =
     params?.dispatchReplyWithBufferedBlockDispatcher ?? vi.fn().mockResolvedValue(undefined);
 
@@ -70,6 +73,7 @@ function setupSessionRuntime(params?: {
       session: {
         resolveStorePath: () => "memory://qqbot",
         readSessionUpdatedAt,
+        recordSessionMetaFromInbound,
         recordInboundSession,
       },
     },
@@ -77,6 +81,7 @@ function setupSessionRuntime(params?: {
 
   return {
     readSessionUpdatedAt,
+    recordSessionMetaFromInbound,
     recordInboundSession,
     dispatchReplyWithBufferedBlockDispatcher,
   };
@@ -116,6 +121,7 @@ describe("QQBot inbound known-target recording", () => {
     outboundMocks.sendTyping.mockResolvedValue({ channel: "qqbot" });
     outboundMocks.sendText.mockResolvedValue({ channel: "qqbot", messageId: "m-1", timestamp: 1 });
     outboundMocks.sendMedia.mockResolvedValue({ channel: "qqbot", messageId: "m-2", timestamp: 2 });
+    proactiveMocks.getKnownQQBotTarget.mockReturnValue(undefined);
     setQQBotRuntime({
       channel: {
         routing: {
@@ -158,12 +164,176 @@ describe("QQBot inbound known-target recording", () => {
         accountId: "default",
         kind: "user",
         target: "user:u-123",
-        displayName: "Alice",
         sourceChatType: "direct",
         firstSeenAt: 1700000000000,
         lastSeenAt: 1700000000000,
       },
     });
+  });
+
+  it("prefers known-target displayName over displayAliases for direct messages", async () => {
+    const logger = createLogger();
+    const sessionRuntime = setupSessionRuntime();
+    proactiveMocks.getKnownQQBotTarget.mockReturnValue({
+      accountId: "default",
+      kind: "user",
+      target: "user:u-alias-1",
+      displayName: "Manual Note",
+      sourceChatType: "direct",
+      firstSeenAt: 100,
+      lastSeenAt: 200,
+    });
+
+    await handleQQBotDispatch({
+      eventType: "C2C_MESSAGE_CREATE",
+      eventData: {
+        id: "msg-alias-1",
+        content: "hello alias",
+        timestamp: 1700000000001,
+        author: {
+          user_openid: "u-alias-1",
+        },
+      },
+      cfg: {
+        channels: {
+          qqbot: {
+            ...baseCfg.channels.qqbot,
+            displayAliases: {
+              "user:u-alias-1": "Global Alias",
+            },
+            accounts: {
+              default: {
+                displayAliases: {
+                  "user:u-alias-1": "Account Alias",
+                },
+              },
+            },
+          },
+        },
+      },
+      accountId: "default",
+      logger,
+    });
+
+    expect(proactiveMocks.upsertKnownQQBotTarget).toHaveBeenCalledWith({
+      target: expect.objectContaining({
+        target: "user:u-alias-1",
+        displayName: "Manual Note",
+      }),
+    });
+    expect(sessionRuntime.recordInboundSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ctx: expect.objectContaining({
+          SenderName: "Manual Note",
+        }),
+      })
+    );
+    expect(sessionRuntime.recordSessionMetaFromInbound).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionKey: expect.any(String),
+        ctx: expect.objectContaining({
+          SenderName: "Manual Note",
+        }),
+        createIfMissing: true,
+      })
+    );
+  });
+
+  it("uses account displayAliases when known-target displayName is missing", async () => {
+    const logger = createLogger();
+    const sessionRuntime = setupSessionRuntime();
+
+    await handleQQBotDispatch({
+      eventType: "C2C_MESSAGE_CREATE",
+      eventData: {
+        id: "msg-priority-1",
+        content: "hello priority",
+        timestamp: 1700000000002,
+        author: {
+          user_openid: "u-priority-1",
+        },
+      },
+      cfg: {
+        channels: {
+          qqbot: {
+            ...baseCfg.channels.qqbot,
+            displayAliases: {
+              "user:u-priority-1": "Global Alias",
+            },
+            accounts: {
+              default: {
+                displayAliases: {
+                  "user:u-priority-1": "Account Alias",
+                },
+              },
+            },
+          },
+        },
+      },
+      accountId: "default",
+      logger,
+    });
+
+    expect(proactiveMocks.upsertKnownQQBotTarget).toHaveBeenCalledWith({
+      target: expect.objectContaining({
+        target: "user:u-priority-1",
+        displayName: "Account Alias",
+      }),
+    });
+    expect(sessionRuntime.recordInboundSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ctx: expect.objectContaining({
+          SenderName: "Account Alias",
+        }),
+      })
+    );
+  });
+
+  it("uses known-target displayName as the formal manual note source", async () => {
+    const logger = createLogger();
+    const sessionRuntime = setupSessionRuntime();
+    proactiveMocks.getKnownQQBotTarget.mockReturnValue({
+      accountId: "default",
+      kind: "user",
+      target: "user:u-history-1",
+      displayName: "Saved User",
+      sourceChatType: "direct",
+      firstSeenAt: 100,
+      lastSeenAt: 200,
+    });
+
+    await handleQQBotDispatch({
+      eventType: "C2C_MESSAGE_CREATE",
+      eventData: {
+        id: "msg-history-1",
+        content: "hello history",
+        timestamp: 1700000000003,
+        author: {
+          user_openid: "u-history-1",
+        },
+      },
+      cfg: baseCfg,
+      accountId: "default",
+      logger,
+    });
+
+    expect(proactiveMocks.getKnownQQBotTarget).toHaveBeenCalledWith({
+      accountId: "default",
+      target: "user:u-history-1",
+    });
+    expect(proactiveMocks.upsertKnownQQBotTarget).toHaveBeenCalledWith({
+      target: expect.objectContaining({
+        target: "user:u-history-1",
+        displayName: "Saved User",
+      }),
+    });
+    expect(sessionRuntime.recordInboundSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ctx: expect.objectContaining({
+          SenderName: "Saved User",
+        }),
+      })
+    );
   });
 
   it("records canonical group targets for allowed group messages", async () => {
@@ -191,7 +361,6 @@ describe("QQBot inbound known-target recording", () => {
         accountId: "default",
         kind: "group",
         target: "group:g-456",
-        displayName: "Team Owner",
         sourceChatType: "group",
         firstSeenAt: 1700000000100,
         lastSeenAt: 1700000000100,
@@ -225,7 +394,6 @@ describe("QQBot inbound known-target recording", () => {
         accountId: "default",
         kind: "channel",
         target: "channel:channel-789",
-        displayName: "Channel Owner",
         sourceChatType: "channel",
         firstSeenAt: 1700000000200,
         lastSeenAt: 1700000000200,

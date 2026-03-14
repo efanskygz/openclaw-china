@@ -8,6 +8,7 @@ const outboundMocks = vi.hoisted(() => ({
 }));
 
 const proactiveMocks = vi.hoisted(() => ({
+  getKnownQQBotTarget: vi.fn(),
   upsertKnownQQBotTarget: vi.fn(),
 }));
 
@@ -26,6 +27,7 @@ vi.mock("./outbound.js", () => ({
 }));
 
 vi.mock("./proactive.js", () => ({
+  getKnownQQBotTarget: proactiveMocks.getKnownQQBotTarget,
   upsertKnownQQBotTarget: proactiveMocks.upsertKnownQQBotTarget,
 }));
 
@@ -91,6 +93,7 @@ const baseCfg = {
 describe("QQBot ref-index quote context", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    proactiveMocks.getKnownQQBotTarget.mockReturnValue(undefined);
     outboundMocks.sendTyping.mockResolvedValue({ channel: "qqbot", refIdx: "REFIDX-typing-1" });
     outboundMocks.sendText.mockResolvedValue({ channel: "qqbot", messageId: "text-1", timestamp: 1 });
     outboundMocks.sendMedia.mockResolvedValue({ channel: "qqbot", messageId: "media-1", timestamp: 2 });
@@ -145,7 +148,6 @@ describe("QQBot ref-index quote context", () => {
       expect.objectContaining({
         content: "现在这条消息",
         senderId: "u-ref-1",
-        senderName: "Alice",
         timestamp: 1700000001000,
       })
     );
@@ -177,6 +179,46 @@ describe("QQBot ref-index quote context", () => {
       expect.objectContaining({
         content: "缺少 msg_idx",
         senderId: "u-ref-2",
+      })
+    );
+  });
+
+  it("stores the resolved alias name in ref-index entries", async () => {
+    installRuntime();
+    const logger = createLogger();
+
+    await handleQQBotDispatch({
+      eventType: "C2C_MESSAGE_CREATE",
+      eventData: {
+        id: "msg-ref-alias-1",
+        event_id: "evt-ref-alias-1",
+        content: "别名引用缓存",
+        timestamp: 1700000002050,
+        author: {
+          user_openid: "u-ref-alias-1",
+          username: "Payload Name",
+        },
+      },
+      cfg: {
+        channels: {
+          qqbot: {
+            ...baseCfg.channels.qqbot,
+            displayAliases: {
+              "user:u-ref-alias-1": "Resolved Alias",
+            },
+          },
+        },
+      },
+      accountId: "default",
+      logger,
+    });
+
+    expect(refIndexMocks.setRefIndex).toHaveBeenCalledWith(
+      "REFIDX-typing-1",
+      expect.objectContaining({
+        content: "别名引用缓存",
+        senderId: "u-ref-alias-1",
+        senderName: "Resolved Alias",
       })
     );
   });
